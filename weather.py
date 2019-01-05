@@ -1,63 +1,105 @@
-from flask import Flask,request,make_response
-import os,json
-import pyowm
+from __future__ import print_function
+from future.standard_library import install_aliases
+install_aliases()
+
+from urllib.parse import urlparse, urlencode
+from urllib.request import urlopen, Request
+from urllib.error import HTTPError
+
+import json
 import os
 
-app = Flask(__name__)
-owmapikey=os.environ.get('OWMApiKey') #or provide your key here
-owm = pyowm.OWM(owmapikey)
+from flask import Flask
+from flask import request
+from flask import make_response
 
-#geting and sending response to dialogflow
+# Flask app should start in global layout
+app = Flask(__name__)
+
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     req = request.get_json(silent=True, force=True)
 
     print("Request:")
     print(json.dumps(req, indent=4))
-    
+
     res = processRequest(req)
 
     res = json.dumps(res, indent=4)
-    print(res)
+    # print(res)
     r = make_response(res)
     r.headers['Content-Type'] = 'application/json'
     return r
 
-#processing the request from dialogflow
+
 def processRequest(req):
-    
+    if req.get("result").get("action") != "yahooWeatherForecast":
+        return {}
+    baseurl = "https://query.yahooapis.com/v1/public/yql?"
+    yql_query = makeYqlQuery(req)
+    if yql_query is None:
+        return {}
+    yql_url = baseurl + urlencode({'q': yql_query}) + "&format=json"
+    result = urlopen(yql_url).read()
+    data = json.loads(result)
+    res = makeWebhookResult(data)
+    return res
+
+
+def makeYqlQuery(req):
     result = req.get("result")
-    print("#### RESULT:")
-    print(json.dumps(result, indent=4))
     parameters = result.get("parameters")
     city = parameters.get("geo-city")
-    observation = owm.weather_at_place(city)
-    w = observation.get_weather()
-    latlon_res = observation.get_location()
-    lat=str(latlon_res.get_lat())
-    lon=str(latlon_res.get_lon())
-     
-    wind_res=w.get_wind()
-    wind_speed=str(wind_res.get('speed'))
-    
-    humidity=str(w.get_humidity())
-    
-    celsius_result=w.get_temperature('celsius')
-    temp_min_celsius=str(celsius_result.get('temp_min'))
-    temp_max_celsius=str(celsius_result.get('temp_max'))
-    
-    fahrenheit_result=w.get_temperature('fahrenheit')
-    temp_min_fahrenheit=str(fahrenheit_result.get('temp_min'))
-    temp_max_fahrenheit=str(fahrenheit_result.get('temp_max'))
-    speech = "Today the weather in " + city + ": \n" + "Temperature in Celsius:\nMax temp :"+temp_max_celsius+".\nMin Temp :"+temp_min_celsius+".\nTemperature in Fahrenheit:\nMax temp :"+temp_max_fahrenheit+".\nMin Temp :"+temp_min_fahrenheit+".\nHumidity :"+humidity+".\nWind Speed :"+wind_speed+"\nLatitude :"+lat+".\n  Longitude :"+lon
-    
+    if city is None:
+        return None
+
+    return "select * from weather.forecast where woeid in (select woeid from geo.places(1) where text='" + city + "')"
+
+
+def makeWebhookResult(data):
+    query = data.get('query')
+    if query is None:
+        return {}
+
+    result = query.get('results')
+    if result is None:
+        return {}
+
+    channel = result.get('channel')
+    if channel is None:
+        return {}
+
+    item = channel.get('item')
+    location = channel.get('location')
+    units = channel.get('units')
+    if (location is None) or (item is None) or (units is None):
+        return {}
+
+    condition = item.get('condition')
+    if condition is None:
+        return {}
+
+    # print(json.dumps(item, indent=4))
+
+    speech = "Today the weather in " + location.get('city') + ": " + condition.get('text') + \
+             ", And the temperature is " + condition.get('temp') + " " + units.get('temperature')
+
+    print("Response:")
+    print(speech)
+
     return {
         "speech": speech,
         "displayText": speech,
-        "source": "dialogflow-weather-by-satheshrgs"
-        }
-    
+        # "data": data,
+        # "contextOut": [],
+        "source": "apiai-weather-webhook-sample"
+    }
+
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
+
     print("Starting app on port %d" % port)
+
     app.run(debug=False, port=port, host='0.0.0.0')
